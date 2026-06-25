@@ -1,0 +1,25 @@
+<vbox xmlns:html="http://www.w3.org/1999/xhtml">
+  <groupbox>
+    <html:h2>Metadata Repair &#8212; settings</html:h2>
+    <hbox align="center">
+      <label value="OpenAlex API key (optional):" style="min-width:18em"/>
+      <html:input id="zmr-openalexkey" type="text" style="flex:1" placeholder="leave blank to skip OpenAlex (Crossref is keyless)"/>
+    </hbox>
+    <hbox align="center">
+      <label value="Contact email (polite pool):" style="min-width:18em"/>
+      <html:input id="zmr-email" type="email" style="flex:1" placeholder="you@example.org"/>
+    </hbox>
+    <description style="margin:0 0 4px 18em;opacity:0.7">Crossref is keyless by default. OpenAlex is only used when a key is set. The email identifies you to the Crossref/OpenAlex polite pool (recommended).</description>
+  </groupbox>
+
+  <groupbox>
+    <html:h2>Metadata completeness report</html:h2>
+    <hbox>
+      <button id="zmr-refresh" label="Refresh report"/>
+      <button id="zmr-repair-worst" label="Repair worst offenders"/>
+    </hbox>
+    <html:pre id="zmr-report" style="white-space:pre-wrap;font-family:monospace;font-size:1.05em;margin-top:8px;padding:8px;border:1px solid var(--fill-quinary,#ccc);border-radius:5px;min-height:8em">Loading report&#8230;</html:pre>
+  </groupbox>
+
+  <html:script src="prefs.js"/>
+</vbox>

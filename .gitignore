@@ -1,0 +1,11 @@
+# build artifacts
+*.xpi
+update.json
+
+# planning / scratch
+CONTRACTS.md
+
+# editor / OS
+.DS_Store
+*.swp
+node_modules/
