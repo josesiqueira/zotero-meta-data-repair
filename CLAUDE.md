@@ -9,7 +9,7 @@ step. Sibling of `../zotero-open-citations` (same author, same bootstrap style).
 - Namespace: `ZMR`; public global published by `init()` = `Zotero.MetaDataRepair`
 - Prefs branch: `metadatarepair.` (pass the SHORT branch to `Zotero.Prefs.get/set`;
   it auto-roots under `extensions.zotero.`)
-- Display name "Zotero Metadata Repair"; version 0.1.0; Zotero 7/8/9
+- Display name "Zotero Metadata Repair"; version 0.1.1; Zotero 7/8/9
   (`strict_min_version` 6.999, `strict_max_version` 9.*)
 - Chrome registered in `init`: `chrome://metadatarepair/content/` ->
   `rootURI + "content/"` (for the diff dialog).
@@ -70,6 +70,34 @@ Shared helpers in core-fields.js: `log`, `getPref`, `setPref`, `notify`
   (`{itemKey, libraryID, itemType, title, missing:[key...], missingCount}`).
   Single read-only pass over the current library's regular items; no network.
 - **Decision / dialog out**: `{approved, fieldsToApply:[key], overwriteNonEmpty:{key:bool}, batchAction?}`.
+
+## v0.1.1 (review window fix)
+
+Additive changes only; the writer and Report shapes are unchanged.
+
+- **Always-open review window.** The single-item path ALWAYS opens the diff
+  dialog, even when there are zero proposed changes. The old "No repairs
+  proposed." toast is gone from the single path; a toast now only appears as a
+  post-apply confirmation ("Updated N field(s)."). Batch is unchanged: it opens
+  a window per item that has changes and accumulates a summary toast for items
+  with none.
+- **Proposal gains `reason` + `sourceFields`** (both additive). `reason` is
+  `null` when `fields` is non-empty (there are changes to show); otherwise it
+  carries a code so the dialog can explain why nothing was proposed.
+  `sourceFields` is the `mapRecordToCoreFields(...)` output when a record was
+  matched (lets the dialog tell "(same)" from "(not found)"), or `null` when
+  `matched:false`.
+- **Reason taxonomy** (resolver emits the code; the dialog owns the wording):
+  `complete` (matched but had nothing this item is missing), `no_title` (no
+  identifier and no title to search with), `no_match` (searched but no confident
+  match / identifier did not resolve), `rate_limited` (deferred or a
+  rate-limit/network error), `unsupported_type` (not a regular item or no
+  applicable core fields), `error` (any other thrown error).
+- **Overwrite gate.** A single header checkbox `#zmr-overwrite-toggle` (off by
+  default) keeps every overwrite-row checkbox disabled until the user opts in.
+  Fill-empty rows stay pre-checked; overwrite rows stay individually unchecked
+  even after the gate is on. The writer still never blanks (`blanked` always
+  `[]`).
 
 ## Design and safety invariants
 

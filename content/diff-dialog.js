@@ -1,14 +1,26 @@
-/* zotero-meta-data-repair — approve-per-field DIFF dialog controller.
+/* zotero-meta-data-repair v0.1.1 - approve-per-field DIFF dialog controller.
+ *
  * Runs in the XUL-rooted dialog window opened via:
  *   win.openDialog("chrome://metadatarepair/content/diff-dialog.xhtml",
- *                  "zmr-diff", "chrome,dialog,modal,centerscreen,resizable", io);
+ *                  "zmr-diff",
+ *                  "chrome,dialog,modal,centerscreen,resizable,width=780,height=560",
+ *                  io);
+ *
  * INPUT : window.arguments[0] = { proposal, itemDisplayTitle, out, batch? }
- * OUTPUT: mutates window.arguments[0].out (never reassigns it).
+ *           batch = { index, total } or undefined.
+ * OUTPUT: mutates window.arguments[0].out IN PLACE (never reassigns it) to
+ *           { approved, fieldsToApply:[coreKey], overwriteNonEmpty:{[coreKey]:Boolean},
+ *             batchAction?:"apply"|"skip"|"stop" }.
+ *
+ * Drives ONLY the IDs in the DESIGN "Dialog DOM contract":
+ *   #zmr-title #zmr-subhead #zmr-banner (#zmr-banner-title #zmr-banner-body)
+ *   #zmr-overwrite-toggle #zmr-approve-all #zmr-clear-all #zmr-tbody
+ *   #zmr-apply #zmr-skip #zmr-cancel #zmr-close
  */
 var ZMR_Diff = {
   HTML: "http://www.w3.org/1999/xhtml",
 
-  // CORE field order (frozen, CONTRACTS.md).
+  // CORE field order (frozen).
   KEYS: ["itemType", "creators", "date", "container", "publisher", "place", "doi"],
 
   // Local label fallback (used when ZMR.coreFields.label is unavailable).
@@ -22,11 +34,47 @@ var ZMR_Diff = {
     doi: "DOI"
   },
 
-  rows: [],       // [{ key, willFill, rowCheckbox, allowCheckbox }]
+  // Reason WORDING map (UI layer; resolver only emits the code). No em dashes.
+  REASONS: {
+    no_match: {
+      title: "No confident match found",
+      body: "We couldn't find a reliable online record for this item. There's no DOI or other identifier, and the title didn't match closely enough to trust an update.",
+      tone: "info"
+    },
+    complete: {
+      title: "Already up to date",
+      body: "We found a matching record online, but it had nothing this item is missing. No changes were proposed.",
+      tone: "info"
+    },
+    no_title: {
+      title: "Not enough to search",
+      body: "This item has no title, so there's nothing to look up. Add a title (or a DOI) and try again.",
+      tone: "info"
+    },
+    rate_limited: {
+      title: "Couldn't reach the lookup service",
+      body: "The lookup service is temporarily busy or unavailable. Your item wasn't changed. Try again shortly.",
+      tone: "warn"
+    },
+    unsupported_type: {
+      title: "Lookup not available for this item type",
+      body: "Automatic repair supports articles, books, conference papers, and similar items. This item type isn't supported yet, so nothing was changed.",
+      tone: "warn"
+    },
+    error: {
+      title: "Something went wrong",
+      body: "The lookup failed unexpectedly. Your item wasn't changed.",
+      tone: "warn"
+    }
+  },
+
+  rows: [],   // [{ key, kind, checkbox }]; kind = "fill" | "overwrite"
   io: null,
+  item: null, // resolved live Zotero item (or null)
 
   $(id) { return document.getElementById(id); },
 
+  // Create an HTML element in the XHTML namespace; `attrs.text` sets textContent.
   he(tag, attrs) {
     const el = document.createElementNS(this.HTML, tag);
     if (attrs) {
@@ -38,186 +86,455 @@ var ZMR_Diff = {
     return el;
   },
 
-  label(key) {
+  ZMR() {
     try {
-      const ZMR = (typeof Zotero !== "undefined" && Zotero.MetaDataRepair) || null;
+      const Z = this.Zotero || (typeof Zotero !== "undefined" ? Zotero : null);
+      return (Z && Z.MetaDataRepair) || null;
+    } catch (e) { return null; }
+  },
+
+  label(key) {
+    const ZMR = this.ZMR();
+    try {
       if (ZMR && ZMR.coreFields && typeof ZMR.coreFields.label === "function") {
         const l = ZMR.coreFields.label(key);
         if (l) return l;
       }
-    } catch (e) { /* fall through to local map */ }
+    } catch (e) { /* fall through */ }
     return this.LABELS[key] || key;
   },
 
-  // Render a value for display. creators arrays -> "Last, First; Last, First".
+  // -----------------------------------------------------------------------
+  // Live current-value reads (mirror resolver's readCurrent* logic). Every
+  // returned scalar is a plain string; creators is an Array of {firstName,
+  // lastName, creatorType}. Returns null/[] when the field is not applicable.
+  // -----------------------------------------------------------------------
+  zoteroFieldFor(key) {
+    const ZMR = this.ZMR();
+    if (ZMR && ZMR.coreFields && typeof ZMR.coreFields.zoteroFieldFor === "function") {
+      try { return ZMR.coreFields.zoteroFieldFor(key, this.item); } catch (e) { /* fall through */ }
+    }
+    if (key === "date") return "date";
+    if (key === "place") return "place";
+    if (key === "doi") return "DOI";
+    return null;
+  },
+
+  // Is this core field applicable to the resolved item's type?
+  applicable(key) {
+    if (!this.item) return false;
+    if (key === "itemType" || key === "creators") return true;
+    if (key === "doi") return true;
+    return !!this.zoteroFieldFor(key);
+  },
+
+  readCurrentCreators() {
+    if (!this.item) return [];
+    try {
+      const cs = this.item.getCreators() || [];
+      const Z = this.Zotero;
+      return cs.map((c) => {
+        let ct = "author";
+        try { ct = (Z && Z.CreatorTypes.getName(c.creatorTypeID)) || "author"; }
+        catch (e) { /* default */ }
+        return {
+          firstName: c.firstName || "",
+          lastName: c.lastName || c.name || "",
+          creatorType: ct
+        };
+      });
+    } catch (e) { return []; }
+  },
+
+  readCurrent(key) {
+    if (!this.item) return "";
+    if (key === "itemType") {
+      try { return this.item.itemType || ""; } catch (e) { return ""; }
+    }
+    if (key === "creators") return this.readCurrentCreators();
+    if (key === "doi") {
+      const ZMR = this.ZMR();
+      try {
+        if (ZMR && typeof ZMR.cleanDOI === "function") return ZMR.cleanDOI(this.item) || "";
+      } catch (e) { /* fall through */ }
+      try { return this.item.getField("DOI") || ""; } catch (e) { return ""; }
+    }
+    const zf = this.zoteroFieldFor(key);
+    if (!zf) return "";
+    try { return this.item.getField(zf) || ""; } catch (e) { return ""; }
+  },
+
+  // Render a value for display. creators -> one per line. Returns "" for empty.
   fmt(key, value) {
-    if (value === undefined || value === null || value === "") return "(empty)";
-    if (key === "creators" && Array.isArray(value)) {
-      if (!value.length) return "(empty)";
+    if (value === undefined || value === null) return "";
+    if (key === "creators") {
+      if (!Array.isArray(value) || !value.length) return "";
       return value.map((c) => {
         const last = (c && (c.lastName || c.name)) || "";
         const first = (c && c.firstName) || "";
         if (last && first) return last + ", " + first;
         return last || first || "(unknown)";
-      }).join("; ");
+      }).join("\n");
     }
     return String(value);
   },
 
-  count(value) {
-    return Array.isArray(value) ? value.length : (value ? 1 : 0);
+  // Append a (possibly multi-line) text value into a cell, HTML-escaped, with
+  // <br/> between lines. Wrapping flag toggles the struck-through class.
+  putText(td, text, struck) {
+    const lines = String(text).split("\n");
+    const span = this.he("span");
+    if (struck) span.setAttribute("class", "zmr-old");
+    lines.forEach((ln, i) => {
+      if (i > 0) span.appendChild(this.he("br"));
+      span.appendChild(document.createTextNode(ln));
+    });
+    td.appendChild(span);
   },
 
+  putMuted(td, text) {
+    const span = this.he("span", { "class": "zmr-note", text: text });
+    td.appendChild(span);
+  },
+
+  // =======================================================================
   init() {
     try {
       const args = window.arguments && window.arguments[0];
       if (!args) return;
       this.io = args;
-      const proposal = args.proposal || { fields: {} };
+
+      const proposal = args.proposal || {};
       const fields = proposal.fields || {};
-      const batch = args.batch;
+      const sourceFields = proposal.sourceFields || null;
+      const batch = args.batch || null;
+      const hasChanges = Object.keys(fields).length > 0;
 
-      // Header.
+      // Zotero is NOT a global in a standalone chrome dialog window; resolve it
+      // from the passed args, the opener window, or (rarely) the global.
+      this.Zotero = (args && args.Zotero) ||
+        (window.opener && window.opener.Zotero) ||
+        (typeof Zotero !== "undefined" ? Zotero : null);
+
+      // Resolve the live item to read CURRENT values for all 7 core fields.
+      this.item = null;
+      try {
+        const Z = this.Zotero;
+        if (Z && Z.Items && typeof Z.Items.getByLibraryAndKey === "function") {
+          this.item = Z.Items.getByLibraryAndKey(
+            proposal.libraryID, proposal.itemKey) || null;
+        }
+      } catch (e) { this.item = null; }
+
+      // ---- Header ----------------------------------------------------------
       const title = args.itemDisplayTitle || "(untitled item)";
-      this.$("zmr-title").textContent = "Repair: " + title;
-      const source = proposal.source || "unknown";
-      const pct = Math.round(((typeof proposal.confidence === "number" ? proposal.confidence : 0)) * 100);
-      this.$("zmr-source").textContent = "Matched via " + source + ", confidence " + pct + "%";
+      this.$("zmr-title").textContent = title;
 
-      if (batch && typeof batch.index !== "undefined" && typeof batch.total !== "undefined") {
-        this.$("zmr-batch").textContent = "(" + batch.index + "/" + batch.total + ")";
-        const skip = this.$("zmr-skip");
-        skip.hidden = false;
-        skip.removeAttribute("hidden");
-        skip.addEventListener("command", () => this.onSkip());
+      const subhead = this.$("zmr-subhead");
+      if (proposal.matched) {
+        const source = proposal.source || "unknown";
+        const conf = (typeof proposal.confidence === "number" ? proposal.confidence : 0);
+        const pct = Math.round(conf * 100);
+        let txt = "Matched via " + source + ", confidence " + pct + "%";
+        if (batch && typeof batch.index !== "undefined" && typeof batch.total !== "undefined") {
+          txt += " · item " + batch.index + " of " + batch.total;
+        }
+        subhead.textContent = txt;
+        subhead.hidden = false;
+        subhead.removeAttribute("hidden");
+      } else {
+        subhead.textContent = "";
+        subhead.hidden = true;
+        subhead.setAttribute("hidden", "true");
       }
 
-      // Build one row per core field, in CORE order.
-      const tbody = this.$("zmr-rows");
-      this.KEYS.forEach((key) => this.buildRow(tbody, key, fields[key]));
+      // ---- Reason banner ---------------------------------------------------
+      this.renderBanner(proposal.reason);
 
-      // Footer buttons.
-      this.$("zmr-approveall").addEventListener("command", () => this.onApproveAll());
-      this.$("zmr-clearall").addEventListener("command", () => this.onClearAll());
-      this.$("zmr-cancel").addEventListener("command", () => this.onCancel());
-      this.$("zmr-apply").addEventListener("command", () => this.onApply());
+      // ---- Rows (ALL 7 in CORE order) -------------------------------------
+      const tbody = this.$("zmr-tbody");
+      while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+      this.rows = [];
+      this.KEYS.forEach((key) => this.buildRow(tbody, key, fields[key], sourceFields));
 
+      // ---- Footer wiring ---------------------------------------------------
+      const toggle = this.$("zmr-overwrite-toggle");
+      if (toggle) toggle.addEventListener("command", () => this.onToggleOverwrite());
+      this.bind("zmr-approve-all", () => this.onApproveAll());
+      this.bind("zmr-clear-all", () => this.onClearAll());
+      this.bind("zmr-cancel", () => this.onCancel());
+      this.bind("zmr-apply", () => this.onApply());
+      this.bind("zmr-close", () => this.onCancel());
+
+      // Batch-only Skip button.
+      const skip = this.$("zmr-skip");
+      if (skip) {
+        if (batch) {
+          skip.hidden = false;
+          skip.removeAttribute("hidden");
+          skip.addEventListener("command", () => this.onSkip());
+        } else {
+          skip.hidden = true;
+          skip.setAttribute("hidden", "true");
+        }
+      }
+
+      // Apply vs Close: when there are zero changed fields, hide Apply + show Close.
+      const apply = this.$("zmr-apply");
+      const close = this.$("zmr-close");
+      if (hasChanges) {
+        if (apply) { apply.hidden = false; apply.removeAttribute("hidden"); }
+        if (close) { close.hidden = true; close.setAttribute("hidden", "true"); }
+      } else {
+        if (apply) { apply.hidden = true; apply.setAttribute("hidden", "true"); }
+        if (close) { close.hidden = false; close.removeAttribute("hidden"); }
+      }
+
+      // Overwrite rows start disabled (gate is off by default).
+      this.applyGate(false);
       this.refreshApplyState();
+
+      // ---- Focus -----------------------------------------------------------
+      this.focusInitial(hasChanges);
     } catch (e) {
       try { Zotero.debug("[MetaDataRepair/diff] init error: " + e); } catch (ee) { /* no Zotero */ }
     }
   },
 
-  buildRow(tbody, key, field) {
+  bind(id, fn) {
+    const el = this.$(id);
+    if (el) el.addEventListener("command", fn);
+  },
+
+  renderBanner(reason) {
+    const banner = this.$("zmr-banner");
+    if (!banner) return;
+    const spec = reason ? this.REASONS[reason] : null;
+    if (!spec) {
+      banner.hidden = true;
+      banner.setAttribute("hidden", "true");
+      return;
+    }
+    banner.setAttribute("class",
+      "zmr-banner " + (spec.tone === "warn" ? "zmr-banner-warn" : "zmr-banner-info"));
+    const t = this.$("zmr-banner-title");
+    const b = this.$("zmr-banner-body");
+    if (t) t.textContent = spec.title;
+    if (b) b.textContent = spec.body;
+    banner.hidden = false;
+    banner.removeAttribute("hidden");
+  },
+
+  // -----------------------------------------------------------------------
+  // Row branches (DESIGN "Row rendering rules"):
+  //   A. proposal.fields[key] && willFill:true   -> zmr-fill  "Add"     (pre-checked)
+  //   B. proposal.fields[key] && willFill:false  -> zmr-overwrite "Replace"
+  //                                                 (unchecked, disabled until gate;
+  //                                                  current struck-through)
+  //   C. sourceFields[key] present && == current -> zmr-unchanged "(same)"
+  //   D. field not applicable to item type       -> zmr-nodata "(n/a)"
+  //   E. otherwise                               -> zmr-nodata "(not found)"
+  // Every injected value is HTML-escaped (textContent / text nodes).
+  // -----------------------------------------------------------------------
+  buildRow(tbody, key, field, sourceFields) {
     const tr = this.he("tr");
-    const present = !!field;
-    const willFill = present && field.willFill === true;
-    const overwrite = present && field.willFill === false;
+    const current = this.readCurrent(key);
+    const currentText = this.fmt(key, current);
 
-    tr.setAttribute("class", !present ? "zmr-none" : (willFill ? "zmr-fill" : "zmr-overwrite"));
+    // Branch detection.
+    const isChange = !!field;
+    const willFill = isChange && field.willFill === true;
+    const isOverwrite = isChange && field.willFill === false;
 
-    // Column 1: row checkbox.
+    let cls, badge, proposedText, struckCurrent, checkbox;
+
+    if (isChange) {
+      proposedText = this.fmt(key, field.proposed);
+      if (willFill) {
+        cls = "zmr-fill";
+        badge = "Add";
+        struckCurrent = false;
+      } else {
+        cls = "zmr-overwrite";
+        badge = "Replace";
+        struckCurrent = true;
+      }
+    } else if (!this.applicable(key)) {
+      cls = "zmr-nodata";
+      proposedText = "(n/a)";
+      struckCurrent = false;
+    } else {
+      // Did the source supply this field at all?
+      const srcHas = sourceFields &&
+        Object.prototype.hasOwnProperty.call(sourceFields, key) &&
+        !this.isBlank(sourceFields[key]);
+      if (srcHas && this.equalsCurrent(key, current, sourceFields[key])) {
+        cls = "zmr-unchanged";
+        proposedText = "(same)";
+      } else {
+        cls = "zmr-nodata";
+        proposedText = "(not found)";
+      }
+      struckCurrent = false;
+    }
+    tr.setAttribute("class", cls);
+
+    // Column 1: checkbox (only for change rows).
     const tdCk = this.he("td", { "class": "zmr-ck" });
-    const cb = this.he("input", { type: "checkbox" });
-    if (!present) cb.disabled = true;
-    else if (willFill) cb.checked = true; // safe fill pre-checked
-    cb.addEventListener("change", () => this.refreshApplyState());
-    tdCk.appendChild(cb);
+    if (isChange) {
+      checkbox = this.he("input", { type: "checkbox" });
+      if (willFill) checkbox.checked = true;          // safe fill: pre-checked
+      if (isOverwrite) checkbox.disabled = true;      // gated until overwrite toggle
+      checkbox.addEventListener("change", () => this.refreshApplyState());
+      tdCk.appendChild(checkbox);
+    } else {
+      tdCk.appendChild(document.createTextNode("·")); // middle dot, no checkbox
+    }
     tr.appendChild(tdCk);
 
-    // Column 2: label (+ inline allow-overwrite control for overwrite rows).
-    const tdLabel = this.he("td", { "class": "zmr-label" });
-    tdLabel.appendChild(this.he("div", { text: this.label(key) }));
-
-    let allowCb = null;
-    if (overwrite) {
-      const allowWrap = this.he("label", { "class": "zmr-allow" });
-      allowCb = this.he("input", { type: "checkbox" });
-      allowCb.addEventListener("change", () => this.refreshApplyState());
-      allowWrap.appendChild(allowCb);
-      allowWrap.appendChild(this.he("span", { text: " allow overwrite" }));
-      tdLabel.appendChild(allowWrap);
+    // Column 2: field label (+ badge for change rows).
+    const tdLabel = this.he("td", { "class": "zmr-field" });
+    tdLabel.appendChild(this.he("span", { text: this.label(key) }));
+    if (badge) {
+      const b = this.he("span", { "class": "zmr-badge", text: badge });
+      tdLabel.appendChild(document.createTextNode(" "));
+      tdLabel.appendChild(b);
     }
     tr.appendChild(tdLabel);
 
     // Column 3: current value.
-    const tdCur = this.he("td", { "class": "zmr-current", text: this.fmt(key, present ? field.current : "") });
+    const tdCur = this.he("td", { "class": "zmr-current" });
+    if (currentText === "") this.putMuted(tdCur, "(empty)");
+    else this.putText(tdCur, currentText, struckCurrent);
     tr.appendChild(tdCur);
 
-    // Column 4: arrow.
-    tr.appendChild(this.he("td", { "class": "zmr-arrow", text: present ? "→" : "" }));
+    // Column 4: arrow (only for change rows).
+    tr.appendChild(this.he("td", { "class": "zmr-arrow", text: isChange ? "→" : "" }));
 
-    // Column 5: proposed value (+ creators add/replace note).
+    // Column 5: proposed value.
     const tdProp = this.he("td", { "class": "zmr-proposed" });
-    if (present) {
-      tdProp.appendChild(this.he("span", { text: this.fmt(key, field.proposed) }));
-      if (key === "creators") {
-        const n = this.count(field.proposed);
-        const note = willFill ? " (add " + n + ")" : " (replace " + n + ")";
-        tdProp.appendChild(this.he("span", { "class": "zmr-note", text: note }));
-      }
-    } else {
-      tdProp.appendChild(this.he("span", { "class": "zmr-note", text: "no change" }));
-    }
+    if (isChange) this.putText(tdProp, proposedText, false);
+    else this.putMuted(tdProp, proposedText);
     tr.appendChild(tdProp);
 
     tbody.appendChild(tr);
 
-    this.rows.push({ key: key, present: present, willFill: willFill, overwrite: overwrite,
-                     rowCheckbox: cb, allowCheckbox: allowCb });
+    if (isChange) {
+      this.rows.push({ key: key, kind: willFill ? "fill" : "overwrite", checkbox: checkbox });
+    }
   },
 
-  // A row counts as approved when its row checkbox is ticked AND, for overwrite
-  // rows, its allow-overwrite box is also ticked.
-  isApproved(r) {
-    if (!r.present) return false;
-    if (!r.rowCheckbox.checked) return false;
-    if (r.overwrite && !(r.allowCheckbox && r.allowCheckbox.checked)) return false;
-    return true;
+  // ---- value helpers (parallel resolver's diff helpers, display-only) ----
+  isBlank(v) {
+    if (v == null) return true;
+    if (Array.isArray(v)) return v.length === 0;
+    return String(v).trim() === "";
   },
 
-  refreshApplyState() {
-    const any = this.rows.some((r) => this.isApproved(r));
-    this.$("zmr-apply").disabled = !any;
+  // Compare a live current value against a source-supplied value for "(same)".
+  equalsCurrent(key, current, sourceVal) {
+    if (key === "creators") {
+      const sig = (arr) => (Array.isArray(arr) ? arr : []).map((c) =>
+        String(c && (c.lastName || c.name) || "").trim().toLowerCase() + "|" +
+        String(c && c.firstName || "").trim().toLowerCase()).join(";");
+      return sig(current) === sig(sourceVal);
+    }
+    return String(current == null ? "" : current).trim().toLowerCase() ===
+           String(sourceVal == null ? "" : sourceVal).trim().toLowerCase();
   },
 
+  // -----------------------------------------------------------------------
+  // Interaction
+  // -----------------------------------------------------------------------
+  // Overwrite gate: enable/disable all overwrite-row checkboxes.
+  applyGate(on) {
+    this.rows.forEach((r) => {
+      if (r.kind === "overwrite" && r.checkbox) {
+        r.checkbox.disabled = !on;
+        if (!on) r.checkbox.checked = false;
+      }
+    });
+  },
+
+  onToggleOverwrite() {
+    const toggle = this.$("zmr-overwrite-toggle");
+    const on = !!(toggle && toggle.checked);
+    this.applyGate(on);
+    this.refreshApplyState();
+  },
+
+  // "Approve all changed": check all currently-enabled change rows.
   onApproveAll() {
     this.rows.forEach((r) => {
-      if (!r.present) return;
-      r.rowCheckbox.checked = true;
-      if (r.overwrite && r.allowCheckbox) r.allowCheckbox.checked = true;
+      if (r.checkbox && !r.checkbox.disabled) r.checkbox.checked = true;
     });
     this.refreshApplyState();
   },
 
+  // "Clear all": uncheck everything.
   onClearAll() {
     this.rows.forEach((r) => {
-      if (r.rowCheckbox && !r.rowCheckbox.disabled) r.rowCheckbox.checked = false;
-      if (r.allowCheckbox) r.allowCheckbox.checked = false;
+      if (r.checkbox) r.checkbox.checked = false;
     });
     this.refreshApplyState();
   },
 
+  approvedCount() {
+    let n = 0;
+    this.rows.forEach((r) => {
+      if (r.checkbox && r.checkbox.checked && !r.checkbox.disabled) n++;
+    });
+    return n;
+  },
+
+  // Live Apply label "Apply N approved changes"; disabled when N == 0.
+  refreshApplyState() {
+    const apply = this.$("zmr-apply");
+    if (!apply) return;
+    const n = this.approvedCount();
+    apply.setAttribute("label", "Apply " + n + " approved changes");
+    apply.disabled = (n === 0);
+  },
+
+  focusInitial(hasChanges) {
+    try {
+      if (hasChanges) {
+        const apply = this.$("zmr-apply");
+        if (apply && !apply.disabled) { apply.focus(); return; }
+        for (const r of this.rows) {
+          if (r.checkbox && !r.checkbox.disabled) { r.checkbox.focus(); return; }
+        }
+        if (apply) apply.focus();
+      } else {
+        const close = this.$("zmr-close");
+        if (close) close.focus();
+      }
+    } catch (e) { /* focus best-effort */ }
+  },
+
+  // -----------------------------------------------------------------------
+  // Output (mutate io.out in place; never reassign)
+  // -----------------------------------------------------------------------
   onApply() {
     const out = this.io.out;
     const fieldsToApply = [];
     const overwriteNonEmpty = {};
-    // Preserve CORE order via this.rows (already in CORE order).
+    // this.rows is already in CORE order.
     this.rows.forEach((r) => {
-      if (this.isApproved(r)) {
+      if (r.checkbox && r.checkbox.checked && !r.checkbox.disabled) {
         fieldsToApply.push(r.key);
-        if (r.overwrite) overwriteNonEmpty[r.key] = true;
+        if (r.kind === "overwrite") overwriteNonEmpty[r.key] = true;
       }
     });
     out.approved = true;
     out.fieldsToApply = fieldsToApply;
     out.overwriteNonEmpty = overwriteNonEmpty;
-    if (this.io.batch) out.batchAction = "apply";
+    out.batchAction = "apply";
     window.close();
   },
 
   onCancel() {
-    // Leave out at the pre-seeded cancel default; signal stop in batch mode.
+    // Leave out at its pre-seeded cancel default; signal stop in batch mode.
     if (this.io.batch) this.io.out.batchAction = "stop";
     window.close();
   },

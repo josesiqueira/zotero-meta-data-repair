@@ -2,7 +2,7 @@
 <window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
         xmlns:html="http://www.w3.org/1999/xhtml"
         title="Repair metadata"
-        width="760" height="520"
+        width="780" height="560"
         windowtype="zmr-diff"
         onload="ZMR_Diff.init();">
 
@@ -10,20 +10,33 @@
     #zmr-root { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding: 10px; gap: 8px; font-size: 1.0em; }
     #zmr-header h2 { margin: 0 0 2px 0; font-size: 1.15em; }
     #zmr-subhead { opacity: 0.75; font-size: 0.95em; }
-    #zmr-batch { opacity: 0.75; font-size: 0.95em; margin-left: 6px; }
+
+    .zmr-banner { padding: 8px 10px; margin: 6px 0; border-radius: 4px; }
+    .zmr-banner-info { background: var(--color-accent-block, rgba(0,120,215,0.10)); }
+    .zmr-banner-warn { background: rgba(184,134,11,0.12); }
+    #zmr-banner-title { font-weight: 600; margin: 0 0 3px 0; }
+    #zmr-banner-body { font-size: 0.95em; opacity: 0.9; }
+
+    .zmr-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .zmr-controls .zmr-spacer { flex: 1; }
+    .zmr-overwrite-label { display: inline-flex; align-items: center; gap: 4px; font-size: 0.92em; }
+
     #zmr-scroll { flex: 1; overflow: auto; border: 1px solid var(--fill-quinary, #ccc); border-radius: 5px; }
     table.zmr-table { width: 100%; border-collapse: collapse; }
     table.zmr-table th, table.zmr-table td { text-align: left; vertical-align: top; padding: 5px 7px; border-bottom: 1px solid var(--fill-quinary, #e3e3e3); }
-    table.zmr-table th { position: sticky; top: 0; background: var(--material-toolbar, #f3f3f3); font-weight: 600; }
+    table.zmr-table th { position: sticky; top: 0; z-index: 1; background: var(--material-toolbar, #f3f3f3); font-weight: 600; }
     td.zmr-ck, th.zmr-ck { width: 1.6em; }
-    td.zmr-arrow { text-align: center; opacity: 0.6; width: 1.6em; }
+    td.zmr-arrow, th.zmr-arrow { text-align: center; opacity: 0.6; width: 1.6em; }
     td.zmr-label { white-space: nowrap; font-weight: 600; }
-    td.zmr-current, td.zmr-proposed { word-break: break-word; max-width: 22em; }
-    tr.zmr-fill { background: rgba(60, 170, 90, 0.14); }
-    tr.zmr-overwrite { background: rgba(225, 165, 40, 0.18); }
-    tr.zmr-none { opacity: 0.5; }
-    .zmr-note { opacity: 0.7; font-size: 0.9em; }
-    .zmr-allow { margin-top: 3px; font-size: 0.9em; }
+    td.zmr-current, td.zmr-proposed { word-break: break-word; max-width: 22em; white-space: pre-line; }
+
+    tr.zmr-fill      { border-left: 3px solid var(--accent-green, #1a7f37); }
+    tr.zmr-overwrite { border-left: 3px solid var(--accent-yellow, #b8860b); }
+    tr.zmr-unchanged, tr.zmr-nodata { opacity: 0.55; }
+
+    .zmr-badge { font-size: 0.8em; padding: 0 5px; border-radius: 3px; border: 1px solid currentColor; }
+    .zmr-old   { text-decoration: line-through; color: var(--fill-secondary, #999); }
+
     #zmr-footer { display: flex; gap: 8px; align-items: center; }
     #zmr-footer .zmr-spacer { flex: 1; }
   ]]></html:style>
@@ -31,10 +44,22 @@
   <html:div id="zmr-root">
     <html:div id="zmr-header">
       <html:h2 id="zmr-title">Repair metadata</html:h2>
-      <html:div id="zmr-subhead">
-        <html:span id="zmr-source"></html:span>
-        <html:span id="zmr-batch"></html:span>
-      </html:div>
+      <html:div id="zmr-subhead" hidden="true"></html:div>
+    </html:div>
+
+    <html:div id="zmr-banner" class="zmr-banner zmr-banner-info" hidden="true">
+      <html:div id="zmr-banner-title"></html:div>
+      <html:div id="zmr-banner-body"></html:div>
+    </html:div>
+
+    <html:div class="zmr-controls">
+      <html:label class="zmr-overwrite-label">
+        <html:input id="zmr-overwrite-toggle" type="checkbox"/>
+        <html:span>Allow overwriting existing values</html:span>
+      </html:label>
+      <html:span class="zmr-spacer"></html:span>
+      <button id="zmr-approve-all" label="Approve all changed"/>
+      <button id="zmr-clear-all" label="Clear all"/>
     </html:div>
 
     <html:div id="zmr-scroll">
@@ -44,20 +69,19 @@
             <html:th class="zmr-ck"></html:th>
             <html:th>Field</html:th>
             <html:th>Current</html:th>
-            <html:th class="zmr-ck"></html:th>
+            <html:th class="zmr-arrow">&#8594;</html:th>
             <html:th>Proposed</html:th>
           </html:tr>
         </html:thead>
-        <html:tbody id="zmr-rows"></html:tbody>
+        <html:tbody id="zmr-tbody"></html:tbody>
       </html:table>
     </html:div>
 
     <html:div id="zmr-footer">
-      <button id="zmr-approveall" label="Approve all changed"/>
-      <button id="zmr-clearall" label="Clear all"/>
       <html:span class="zmr-spacer"></html:span>
       <button id="zmr-skip" label="Skip" hidden="true"/>
       <button id="zmr-cancel" label="Cancel"/>
+      <button id="zmr-close" label="Close"/>
       <button id="zmr-apply" label="Apply" default="true"/>
     </html:div>
   </html:div>

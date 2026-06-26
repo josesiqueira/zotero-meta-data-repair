@@ -37,13 +37,16 @@ icon -> **Install Plugin From File** -> pick the `.xpi`. Works on Zotero
 ## Usage
 
 1. Select one or more items, right-click, and choose **"Repair metadata…"**.
-2. The plugin looks each item up and opens a per-field diff: current value on
-   the left, proposed value on the right, for every core field that would
-   change.
+2. For a **single item the review window always opens**, even when nothing would
+   change. It shows your current value on the left and what was found on the
+   right for every core field, so you can see exactly what is being proposed.
 3. **Approve each row** you want, or use **Approve all changed**, then **Apply**.
 4. Empty fields are pre-checked (safe fills). A row that would **overwrite** an
    existing value is shown in amber and is **not** pre-checked: you must also
    tick its "allow overwrite" box for it to apply.
+5. When **nothing is found**, the window stays open and shows a clear reason
+   (for example no confident match, already up to date, no title to search with,
+   or the lookup service was unavailable), so you are never left guessing.
 
 Nothing is overwritten unless you explicitly allow it, and the plugin **never
 blanks a field**.

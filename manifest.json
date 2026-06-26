@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Zotero Metadata Repair",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Right-click an item to review and repair its metadata against external sources (DOI-first with a guarded fuzzy fallback), with an approve-per-field diff. Includes a report of items missing core fields. Works on Zotero 7, 8, and 9.",
   "author": "Jose Siqueira de Cerqueira",
   "homepage_url": "https://github.com/josesiqueira/zotero-meta-data-repair",
