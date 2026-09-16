@@ -1,6 +1,6 @@
 # Zotero Metadata Repair
 
-A modern **Zotero 7, 8, and 9** plugin that finds items with thin or missing
+A modern **Zotero 7 to 10** plugin that finds items with thin or missing
 metadata and repairs them from authoritative sources, one reviewable diff at a
 time. It reuses Zotero's own translators for exact identifier matches and falls
 back to a guarded fuzzy search only when it is confident. Nothing is written
@@ -32,7 +32,7 @@ example a DOI on a book chapter) is never counted against it.
 This is a build-free bootstrap plugin. Download the `.xpi` from
 **Releases**, then in Zotero: **Tools -> Plugins** (or Add-ons) -> the gear
 icon -> **Install Plugin From File** -> pick the `.xpi`. Works on Zotero
-**7, 8, and 9**.
+**7 to 10**.
 
 ## Usage
 
@@ -88,7 +88,7 @@ faster and more reliable.
 
 ## Compatibility
 
-Zotero **7, 8, and 9** (`strict_min_version` 6.999, `strict_max_version` 9.*).
+Zotero **7 to 10** (`strict_min_version` 6.999, `strict_max_version` 10.*).
 Bootstrapped plugin, no XUL overlay.
 
 ## License
