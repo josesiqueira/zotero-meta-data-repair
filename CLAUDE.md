@@ -9,7 +9,7 @@ step. Sibling of `../zotero-open-citations` (same author, same bootstrap style).
 - Namespace: `ZMR`; public global published by `init()` = `Zotero.MetaDataRepair`
 - Prefs branch: `metadatarepair.` (pass the SHORT branch to `Zotero.Prefs.get/set`;
   it auto-roots under `extensions.zotero.`)
-- Display name "Zotero Metadata Repair"; version 0.1.1; Zotero 7 to 10
+- Display name "Zotero Metadata Repair"; version 0.1.2; Zotero 7 to 10
   (`strict_min_version` 6.999, `strict_max_version` 10.*)
 - Chrome registered in `init`: `chrome://metadatarepair/content/` ->
   `rootURI + "content/"` (for the diff dialog).
